@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "kalloc.h" //added for meminfo
 
 struct cpu cpus[NCPU];
 
@@ -124,7 +125,7 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
-
+  p->nice = 20;
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -693,3 +694,149 @@ procdump(void)
     printf("\n");
   }
 }
+
+// PA1 
+int 
+getpname(int pid) 
+{
+  struct proc *p;
+  
+  for (p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if (p->pid == pid) {
+          printf("%s\n", p->name);
+          release(&p->lock);
+          return 0;
+      }
+      release(&p->lock);
+  }
+  return -1;
+}
+
+int 
+getnice(int pid) 
+{
+  struct proc *p;
+
+  for (p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if (p->pid == pid) {
+          int nice_value = p->nice;
+          release(&p->lock);
+          return nice_value;
+      }
+      release(&p->lock);
+  }
+  return -1;
+}
+
+int 
+setnice(int pid, int value) 
+{
+  if (value < 0 || value > 39) return -1;
+
+  struct proc *p;
+
+  for (p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if (p->pid == pid) {
+          p->nice = value; 
+          release(&p->lock);
+          return 0;
+      }
+      release(&p->lock);
+  }
+  return -1;
+}
+
+void 
+ps(int pid) 
+{
+    struct proc *p;
+    char *procstate[] = {"UNUSED  ", "EMBRYO  ", "SLEEPING", "RUNNABLE", "RUNNING ", "ZOMBIE  "};
+
+    acquire(&wait_lock);
+
+    printf("name\t\tpid\tstate\t\tpriority\n");
+
+    for (p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if (p->state != UNUSED) {
+            if (pid == 0 || p->pid == pid) {
+                printf("%s\t\t", p->name);
+                printf("%d\t", p->pid);
+                printf("%s\t", procstate[p->state]);
+                printf("%d\n", p->nice);
+            }
+        }
+        release(&p->lock);
+    }
+
+    release(&wait_lock);
+}
+
+uint64 
+meminfo(void) 
+{
+  struct run *r;
+  uint64 free_pages = 0;
+
+  acquire(&kmem.lock);
+  for (r = kmem.freelist; r; r = r->next) {
+      free_pages++;
+  }
+  release(&kmem.lock);
+
+  return free_pages * PGSIZE;
+}
+
+int
+waitpid(int pid, uint64 addr, int options)
+{
+  struct proc *p;
+  struct proc *curproc = myproc();
+  int found = 0;
+  
+  acquire(&wait_lock);
+
+  for (;;) {
+    found = 0;
+
+    for (p = proc; p < &proc[NPROC]; p++) {
+      if (p->pid == pid) {
+        found = 1;
+
+        acquire(&p->lock);
+
+        if (p->state == ZOMBIE) {
+          int exited_pid = p->pid;
+
+          if (addr != 0 && copyout(curproc->pagetable, addr, (char *)&p->xstate, sizeof(p->xstate)) < 0) {
+            release(&p->lock);
+            release(&wait_lock);
+            return -1;  
+          }
+
+          freeproc(p);
+          release(&p->lock);
+          release(&wait_lock);
+          return exited_pid;
+        }
+
+        release(&p->lock);
+      }
+    }
+
+    if (!found) {
+      release(&wait_lock);
+      return -1;
+    }
+
+    sleep(curproc, &wait_lock);
+  }
+}
+
+
+
+
+
