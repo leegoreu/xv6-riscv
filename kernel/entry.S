@@ -10,6 +10,9 @@ _entry:
         # with a 4096-byte stack per CPU.
         # sp = stack0 + (hartid * 4096)
         la sp, stack0
+        # la sp, end
+	# lui sp, %hi(stack0)  
+        # addi sp, sp, %lo(stack0)
         li a0, 1024*4
         csrr a1, mhartid
         addi a1, a1, 1

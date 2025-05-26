@@ -7,6 +7,17 @@
 #include "defs.h"
 #include "kalloc.h" //added for meminfo
 
+int weight_table[40] = {
+ /* 0  */     88761,     71755,     56483,     46273,     36291,
+ /* 5  */     29154,     23254,     18705,     14949,     11916,
+ /* 10 */      9548,      7620,      6100,      4904,      3906,
+ /* 15 */      3121,      2501,      1991,      1586,      1277,
+ /* 20 */      1024,       820,       655,       526,       423,
+ /* 25 */       335,       272,       215,       172,       137,
+ /* 30 */       110,        87,        70,        56,        45,
+ /* 35 */        36,        29,        23,        18,        15,
+};
+
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -170,6 +181,7 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->nice = 0;
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -302,6 +314,8 @@ fork(void)
 
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
+
+  np->nice = p->nice;
 
   // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
@@ -753,7 +767,7 @@ void
 ps(int pid) 
 {
     struct proc *p;
-    char *procstate[] = {"UNUSED  ", "EMBRYO  ", "SLEEPING", "RUNNABLE", "RUNNING ", "ZOMBIE  "};
+    char *procstate[] = {"UNUSED  ", "USED    ", "SLEEPING", "RUNNABLE", "RUNNING ", "ZOMBIE  "};
 
     acquire(&wait_lock);
 
