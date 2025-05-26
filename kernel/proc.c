@@ -331,6 +331,7 @@ fork(void)
   np->vruntime = p->vruntime;
   np->nice = p->nice;
 
+  // Set initial virtual deadline for child based on its vruntime and weight
   np->vdeadline = np->vruntime + (BASE_SLICE * (weight_table[20] / weight_table[np->nice]));
 
   // increment reference counts on open file descriptors.
@@ -469,8 +470,8 @@ wait(uint64 addr)
 
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
-// Scheduler never returns.  It loops, doing:
-//  - choose a process to run.
+// Scheduler never returns. It loops, doing:
+//  - select the RUNNABLE process with the earliest eligible virtual deadline.
 //  - swtch to start running that process.
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
@@ -491,6 +492,7 @@ scheduler(void)
     struct proc *min_vdl_process = 0; 
     int min_vdeadline = MAX_INT;
 
+    // Select the RUNNABLE process with the earliest eligible virtual deadline
     for(p = proc; p < &proc[NPROC]; p++){
       acquire(&p->lock);	
       if(p->state == RUNNABLE && p->vdeadline < min_vdeadline) {
@@ -748,6 +750,7 @@ procdump(void)
 }
 
 // PA1 
+//Task: implement new system calls: getpname, getnice, setnice, ps, meminfo, waitpid
 int 
 getpname(int pid) 
 {
@@ -897,15 +900,19 @@ waitpid(int pid, uint64 addr, int options)
 }
 
 
-//PA2
+// PA2
+//Tasks: implement EEVDF on xv6; modify ps output
+
+// Update avg_vruntime and total_weight for scheduling
 void 
 update_avg_vruntime(void)
 {
-    avg_vruntime = 0;
-    total_weight = 0;
+    avg_vruntime = 0;          // Global weighted virtual runtime sum
+    total_weight = 0;          // Total weight of RUNNABLE/RUNNING processes
     struct proc *p;
-    min_vruntime = MAX_INT;
+    min_vruntime = MAX_INT;    // Initialize to find minimum vruntime
 
+    // First pass: find min_vruntime and total_weight
     for (p = proc; p < &proc[NPROC]; p++) {
         acquire(&p->lock);
         if (p->state == RUNNABLE || p->state == RUNNING) {
@@ -918,6 +925,7 @@ update_avg_vruntime(void)
 
     if (min_vruntime == MAX_INT) min_vruntime = 0;
 
+    // Second pass: compute weighted vruntime difference sum
     for (p = proc; p < &proc[NPROC]; p++) {
         acquire(&p->lock);
         if (p->state == RUNNABLE || p->state == RUNNING) {
@@ -927,6 +935,7 @@ update_avg_vruntime(void)
     }
 }
 
+/// Check if a process is eligible to run under EEVDF
 int 
 isEligible(struct proc *p)
 {
