@@ -77,8 +77,25 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
-    yield();
+  if(which_dev == 2 && p != 0 && p->state == RUNNING){
+    int delta_runtime = 1000;
+
+    // update total runtime
+    p->runtime += delta_runtime;
+
+    // update virtual runtime based on weight
+    int weight = weight_table[p->nice];
+    p->vruntime += (delta_runtime * weight_table[20]) / weight;
+
+    // decrease remaining time slice
+    p->time_slice -= delta_runtime;
+
+    // if time slice is used up, update vdeadline and yield
+    if (p->time_slice <= 0){
+      p->vdeadline = p->vruntime + (BASE_SLICE * (weight_table[20] / weight_table[p->nice]));
+      yield();
+    }
+  }
 
   usertrapret();
 }
@@ -173,7 +190,7 @@ clockintr()
   // ask for the next timer interrupt. this also clears
   // the interrupt request. 1000000 is about a tenth
   // of a second.
-  w_stimecmp(r_time() + 1000000);
+  w_stimecmp(r_time() + 100000);
 }
 
 // check if it's an external interrupt or software interrupt,

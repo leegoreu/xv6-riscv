@@ -18,6 +18,10 @@ int weight_table[40] = {
  /* 35 */        36,        29,        23,        18,        15,
 };
 
+int avg_vruntime;
+int min_vruntime;
+int total_weight;
+
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -137,6 +141,11 @@ found:
   p->pid = allocpid();
   p->state = USED;
   p->nice = 20;
+  p->vdeadline = BASE_SLICE;
+  p->runtime = 0;
+  p->vruntime = 0;
+  p->time_slice = BASE_SLICE;
+
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -182,6 +191,10 @@ freeproc(struct proc *p)
   p->xstate = 0;
   p->state = UNUSED;
   p->nice = 0;
+  p->runtime = 0;
+  p->vruntime = 0;
+  p->time_slice = 0;
+  p->vdeadline = 0;
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -315,7 +328,10 @@ fork(void)
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
 
+  np->vruntime = p->vruntime;
   np->nice = p->nice;
+
+  np->vdeadline = np->vruntime + (BASE_SLICE * (weight_table[20] / weight_table[np->nice]));
 
   // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
@@ -336,6 +352,8 @@ fork(void)
   acquire(&np->lock);
   np->state = RUNNABLE;
   release(&np->lock);
+
+  update_avg_vruntime();
 
   return pid;
 }
@@ -470,22 +488,36 @@ scheduler(void)
     intr_on();
 
     int found = 0;
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
+    struct proc *min_vdl_process = 0; 
+    int min_vdeadline = MAX_INT;
+
+    for(p = proc; p < &proc[NPROC]; p++){
+      acquire(&p->lock);	
+      if(p->state == RUNNABLE && p->vdeadline < min_vdeadline) {
+        if (isEligible(p)){
+          min_vdeadline = p->vdeadline;
+          min_vdl_process = p;
+      }}
+      release(&p->lock);
+    }
+
+    if(min_vdl_process) {
+      acquire(&min_vdl_process->lock);
+      if(min_vdl_process->state == RUNNABLE) {
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
+        min_vdl_process->time_slice = BASE_SLICE;
+        min_vdl_process->state = RUNNING;
+        c->proc = min_vdl_process;
+        swtch(&c->context, &min_vdl_process->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
         found = 1;
       }
-      release(&p->lock);
+      release(&min_vdl_process->lock);
     }
     if(found == 0) {
       // nothing to run; stop running on this core until an interrupt.
@@ -526,6 +558,7 @@ sched(void)
 void
 yield(void)
 {
+  update_avg_vruntime();
   struct proc *p = myproc();
   acquire(&p->lock);
   p->state = RUNNABLE;
@@ -594,16 +627,21 @@ void
 wakeup(void *chan)
 {
   struct proc *p;
+  struct proc *curr = mycpu()->proc;
 
   for(p = proc; p < &proc[NPROC]; p++) {
-    if(p != myproc()){
+    if(p != curr){
       acquire(&p->lock);
       if(p->state == SLEEPING && p->chan == chan) {
         p->state = RUNNABLE;
+        p->vdeadline = p->vruntime + ( BASE_SLICE * (weight_table[20] / weight_table[p->nice]));
+	      p->time_slice = BASE_SLICE;
       }
       release(&p->lock);
     }
   }
+
+  update_avg_vruntime();
 }
 
 // Kill the process with the given pid.
@@ -755,6 +793,7 @@ setnice(int pid, int value)
       acquire(&p->lock);
       if (p->pid == pid) {
           p->nice = value; 
+          p->vdeadline = p->vruntime + (5000 * ( weight_table[20] / weight_table[p->nice]));
           release(&p->lock);
           return 0;
       }
@@ -768,25 +807,32 @@ ps(int pid)
 {
     struct proc *p;
     char *procstate[] = {"UNUSED  ", "USED    ", "SLEEPING", "RUNNABLE", "RUNNING ", "ZOMBIE  "};
+    int runtime_weight;
+    char *eligible;
+    int weight;
 
-    acquire(&wait_lock);
-
-    printf("name\t\tpid\tstate\t\tpriority\n");
+    printf("name\t\tpid\tstate\t\tpriority\truntime/weight\truntime\t\tvruntime\tvdeadline\tisEligible\tticks %d\n", ticks * 1000);
 
     for (p = proc; p < &proc[NPROC]; p++) {
         acquire(&p->lock);
-        if (p->state != UNUSED) {
-            if (pid == 0 || p->pid == pid) {
-                printf("%s\t\t", p->name);
-                printf("%d\t", p->pid);
-                printf("%s\t", procstate[p->state]);
-                printf("%d\n", p->nice);
-            }
+        if (p->state != UNUSED && (pid == 0 || p->pid == pid)) {
+
+          weight = weight_table[p->nice];
+          runtime_weight = (weight != 0) ? (p->runtime / weight) : 0;
+          eligible = isEligible(p) ? "true" : "false";
+
+          printf("%s\t\t", p->name);
+          printf("%d\t", p->pid);
+          printf("%s\t", procstate[p->state]);
+          printf("%d\t\t", p->nice);
+          printf("%d\t\t", runtime_weight);
+          printf("%d\t\t", p->runtime);
+          printf("%d\t\t", p->vruntime);
+          printf("%d\t\t", p->vdeadline);
+          printf("%s\n", eligible);
         }
         release(&p->lock);
     }
-
-    release(&wait_lock);
 }
 
 uint64 
@@ -851,6 +897,41 @@ waitpid(int pid, uint64 addr, int options)
 }
 
 
+//PA2
+void 
+update_avg_vruntime(void)
+{
+    avg_vruntime = 0;
+    total_weight = 0;
+    struct proc *p;
+    min_vruntime = MAX_INT;
 
+    for (p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if (p->state == RUNNABLE || p->state == RUNNING) {
+            if (p->vruntime < min_vruntime)
+                min_vruntime = p->vruntime;
+            total_weight += weight_table[p->nice];
+        }
+        release(&p->lock);
+    }
+
+    if (min_vruntime == MAX_INT) min_vruntime = 0;
+
+    for (p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if (p->state == RUNNABLE || p->state == RUNNING) {
+            avg_vruntime += (p->vruntime - min_vruntime) * weight_table[p->nice];
+        }
+        release(&p->lock);
+    }
+}
+
+int 
+isEligible(struct proc *p)
+{
+    int weighted_gap = total_weight * (p->vruntime - min_vruntime);
+    return (avg_vruntime >= weighted_gap) ? 1 : 0;
+}
 
 
