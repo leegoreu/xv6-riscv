@@ -3,6 +3,10 @@
 #include "user/user.h"
 
 int main() {
+    //
+    // PA1 TEST
+    // 
+    /*
     printf(">>>Testing getpname:\n");
     getpname(1);  //if exists
 
@@ -55,6 +59,43 @@ int main() {
 
     int w2 = waitpid(pid2, (uint64)&exit_status, 0);
     printf("done2 %d %d\n", w2, exit_status);
+
+    exit(0);*/
+
+    //
+    // PA2 TEST
+    //
+    printf(">>> Testing fair scheduling:\n");
+
+    int range = 100000;
+    int a = 1;
+
+    int pid1 = fork();
+
+    if (pid1 > 0) {
+        //parent proc
+        setnice(getpid(), 0);
+        for (int i = 0; i < range; i++) { //some work
+            for (int j = 0; j < range; j++) {
+                a = a * 10 + 1;
+            }
+        }
+
+        // print all process stats
+        ps(0);
+        // wait for child to finish
+        wait(0);
+    } else if (pid1 == 0) {
+        //child proc
+        setnice(getpid(), 10);
+        for (int i = 0; i < range; i++) { //some work
+            for (int j = 0; j < range; j++) {
+                a = a * 10 + 1;
+            }
+        }
+
+        exit(0);
+    }
 
     exit(0);
     
